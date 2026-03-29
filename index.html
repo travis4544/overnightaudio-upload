@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Direct Dropbox Upload</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #536C7C; display: flex; justify-content: center; align-items: center; height: 100vh; }
+  .upload-area { border: 2px dashed #0077ff; border-radius: 12px; width: 800px; height: 400px; display: flex; justify-content: center; align-items: center; flex-direction: column; background:#7B949C; transition: background 0.3s; cursor: pointer; }
+  .upload-area.dragover { background: #e0f0ff; }
+  .upload-area p { font-size: 16px; color: #333; text-align: center; }
+  input[type="file"] { display: none; }
+  .progress-container { width: 100%; background: #ddd; border-radius: 5px; margin-top: 10px; }
+  .progress-bar { width: 0%; height: 10px; background: #0077ff; border-radius: 5px; transition: width 0.2s; }
+  .file-status { font-size: 14px; margin-top: 5px; color: #fff; }
+  .success-banner { display: none; flex-direction: column; align-items: center; margin-top: 20px; }
+  .success-banner p { font-size: 18px; font-weight: bold; margin-bottom: 10px; }
+  .upload-more-btn { color: white; border: none; border-radius: 8px; padding: 12px 28px; font-size: 16px; cursor: pointer; background: #28a745; }
+  .upload-more-btn:hover { opacity: 0.9; }
+</style>
+</head>
+<body>
+<div class="upload-area" id="upload-area">
+  <p>Drag & Drop your files here<br>or click to select<br>
+  <small style="color:#555;">(1GB max file size)</small><br>
+  <small style="color:#555;">Accepted formats: WAV, OMF, AAF, MOV, MP4, MP3, MPEG, AIFF, FLAC</small></p>
+  <input type="file" id="fileInput" multiple>
+  <div id="statuses"></div>
+  <div class="success-banner" id="success-banner">
+    <p id="banner-msg"></p>
+    <button class="upload-more-btn" id="upload-more-btn">Upload more files</button>
+  </div>
+</div>
+<script>
+const BACKEND = "https://overnightaudio-uploader-backend.onrender.com";
+const CHUNK_SIZE = 150 * 1024 * 1024;
+const ALLOWED_EXTENSIONS = ['.wav', '.omf', '.aaf', '.mov', '.mp4', '.mp3', '.mpeg', '.aiff', '.flac'];
+
+const uploadArea = document.getElementById("upload-area");
+const fileInput = document.getElementById("fileInput");
+const statusesContainer = document.getElementById("statuses");
+const successBanner = document.getElementById("success-banner");
+const uploadMoreBtn = document.getElementById("upload-more-btn");
+const bannerMsg = document.getElementById("banner-msg");
+
+let activeUploads = 0;
+let failedUploads = 0;
+
+uploadArea.addEventListener("click", (e) => {
+  if (e.target === uploadMoreBtn) return;
+  fileInput.click();
+});
+
+fileInput.addEventListener("change", (e) => {
+  successBanner.style.display = "none";
+  Array.from(e.target.files).forEach(uploadFile);
+});
+
+uploadArea.addEventListener("dragover", (e) => { e.preventDefault(); uploadArea.classList.add("dragover"); });
+uploadArea.addEventListener("dragleave", () => uploadArea.classList.remove("dragover"));
+uploadArea.addEventListener("drop", (e) => {
+  e.preventDefault();
+  uploadArea.classList.remove("dragover");
+  successBanner.style.display = "none";
+  Array.from(e.dataTransfer.files).forEach(uploadFile);
+});
+
+uploadMoreBtn.addEventListener("click", () => {
+  successBanner.style.display = "none";
+  statusesContainer.innerHTML = "";
+  fileInput.value = "";
+  failedUploads = 0;
+  fileInput.click();
+});
+
+async function uploadFile(file) {
+  // ── File type check before anything else ──
+  const ext = '.' + file.name.split('.').pop().toLowerCase();
+  if (!ALLOWED_EXTENSIONS.includes(ext)) {
+    const fileStatus = document.createElement("div");
+    fileStatus.className = "file-status";
+    fileStatus.style.color = "#cc0000";
+    fileStatus.innerText = `❌ ${file.name} — file type not allowed. Please use WAV, OMF, AAF, MOV, MP4, MP3, MPEG, AIFF or FLAC.`;
+    statusesContainer.appendChild(fileStatus);
+    failedUploads++;
+    checkAllDone();
+    return;
+  }
+
+  activeUploads++;
+
+  const fileStatus = document.createElement("div");
+  fileStatus.className = "file-status";
+  fileStatus.innerText = `Starting upload: ${file.name}`;
+
+  const progressContainer = document.createElement("div");
+  progressContainer.className = "progress-container";
+  const progressBar = document.createElement("div");
+  progressBar.className = "progress-bar";
+  progressContainer.appendChild(progressBar);
+
+  statusesContainer.appendChild(fileStatus);
+  statusesContainer.appendChild(progressContainer);
+
+  function setStatus(msg, colour) {
+    fileStatus.innerText = msg;
+    if (colour) fileStatus.style.color = colour;
+  }
+
+  function setProgress(pct) {
+    progressBar.style.width = pct + "%";
+  }
+
+  try {
+    setStatus(`${file.name} — starting session…`);
+    const startRes = await fetch(`${BACKEND}/upload/start`, { method: "POST" });
+    if (!startRes.ok) throw new Error("Failed to start upload session");
+    const { session_id } = await startRes.json();
+
+    let offset = 0;
+    let chunkNumber = 0;
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+    while (offset < file.size) {
+      const chunk = file.slice(offset, offset + CHUNK_SIZE);
+      chunkNumber++;
+      setStatus(`${file.name} — uploading chunk ${chunkNumber} of ${totalChunks}…`);
+
+      let attempts = 0;
+      let success = false;
+      while (attempts < 3 && !success) {
+        attempts++;
+        try {
+          const appendRes = await fetch(`${BACKEND}/upload/append`, {
+            method: "POST",
+            headers: {
+              "x-session-id": session_id,
+              "x-offset": String(offset),
+              "Content-Type": "application/octet-stream",
+            },
+            body: chunk,
+          });
+          if (!appendRes.ok) {
+            const err = await appendRes.json().catch(() => ({}));
+            throw new Error(err.error || `HTTP ${appendRes.status}`);
+          }
+          success = true;
+        } catch (chunkErr) {
+          if (attempts >= 3) throw new Error(`Chunk ${chunkNumber} failed after 3 attempts: ${chunkErr.message}`);
+          setStatus(`${file.name} — chunk ${chunkNumber} failed, retrying (${attempts}/3)…`, "#cc6600");
+          await new Promise(r => setTimeout(r, 2000 * attempts));
+        }
+      }
+
+      offset += chunk.size;
+      setProgress(Math.round((offset / file.size) * 100));
+    }
+
+    setStatus(`${file.name} — finalising…`);
+    const finishRes = await fetch(`${BACKEND}/upload/finish`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id, offset: file.size, filename: file.name }),
+    });
+
+    if (!finishRes.ok) throw new Error("Failed to finalise upload");
+
+    setProgress(100);
+    setStatus(`✅ ${file.name} complete`, "lightgreen");
+
+  } catch (err) {
+    failedUploads++;
+    setStatus(`❌ Upload failed: ${file.name} — ${err.message}`, "#cc0000");
+    console.error(err);
+  }
+
+  activeUploads--;
+  checkAllDone();
+}
+
+function checkAllDone() {
+  if (activeUploads === 0) {
+    if (failedUploads > 0) {
+      bannerMsg.innerText = "⚠️ Something went wrong — please try again.";
+      bannerMsg.style.color = "#cc0000";
+      uploadMoreBtn.innerText = "Try again";
+      uploadMoreBtn.style.background = "#cc3300";
+    } else {
+      bannerMsg.innerText = "✅ Files uploaded successfully!";
+      bannerMsg.style.color = "#fff";
+      uploadMoreBtn.innerText = "Upload more files";
+      uploadMoreBtn.style.background = "#28a745";
+    }
+    failedUploads = 0;
+    successBanner.style.display = "flex";
+  }
+}
+</script>
+</body>
+</html>
