@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Direct Dropbox Upload</title>
+<title>Overnight Audio — Upload</title>
 <style>
   body { font-family: Arial, sans-serif; background: #536C7C; display: flex; justify-content: center; align-items: center; height: 100vh; }
   .upload-area { border: 2px dashed #0077ff; border-radius: 12px; width: 800px; height: 400px; display: flex; justify-content: center; align-items: center; flex-direction: column; background:#7B949C; transition: background 0.3s; cursor: pointer; }
@@ -17,10 +17,12 @@
   .success-banner p { font-size: 18px; font-weight: bold; margin-bottom: 10px; }
   .upload-more-btn { color: white; border: none; border-radius: 8px; padding: 12px 28px; font-size: 16px; cursor: pointer; background: #28a745; }
   .upload-more-btn:hover { opacity: 0.9; }
+  .project-label { font-size: 14px; color: #fff; margin-bottom: 10px; background: rgba(0,0,0,0.2); padding: 6px 14px; border-radius: 20px; }
 </style>
 </head>
 <body>
 <div class="upload-area" id="upload-area">
+  <div class="project-label" id="project-label"></div>
   <p>Drag & Drop your files here<br>or click to select<br>
   <small style="color:#555;">(1GB max file size)</small><br>
   <small style="color:#555;">Accepted formats: WAV, OMF, AAF, MOV, MP4, MP3, MPEG, AIFF, FLAC</small></p>
@@ -35,6 +37,21 @@
 const BACKEND = "https://overnightaudio-uploader-backend.onrender.com";
 const CHUNK_SIZE = 150 * 1024 * 1024;
 const ALLOWED_EXTENSIONS = ['.wav', '.omf', '.aaf', '.mov', '.mp4', '.mp3', '.mpeg', '.aiff', '.flac'];
+
+// ── Read project from URL ──
+const urlParams = new URLSearchParams(window.location.search);
+const rawProject = urlParams.get('project') || 'General';
+// Sanitise — replace spaces and special chars with underscores
+const project = rawProject.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+
+// Show project label if present
+const projectLabel = document.getElementById("project-label");
+if (rawProject && rawProject !== 'General') {
+  projectLabel.innerText = `📁 Uploading to: ${rawProject}`;
+  projectLabel.style.display = "block";
+} else {
+  projectLabel.style.display = "none";
+}
 
 const uploadArea = document.getElementById("upload-area");
 const fileInput = document.getElementById("fileInput");
@@ -74,7 +91,7 @@ uploadMoreBtn.addEventListener("click", () => {
 });
 
 async function uploadFile(file) {
-  // ── File type check before anything else ──
+  // ── File type check ──
   const ext = '.' + file.name.split('.').pop().toLowerCase();
   if (!ALLOWED_EXTENSIONS.includes(ext)) {
     const fileStatus = document.createElement("div");
@@ -160,7 +177,7 @@ async function uploadFile(file) {
     const finishRes = await fetch(`${BACKEND}/upload/finish`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id, offset: file.size, filename: file.name }),
+      body: JSON.stringify({ session_id, offset: file.size, filename: file.name, project }),
     });
 
     if (!finishRes.ok) throw new Error("Failed to finalise upload");
